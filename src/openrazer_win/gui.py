@@ -19,7 +19,7 @@ import datetime as _dt
 
 from .mouse import (
     BTN_ACTION_DEFAULT, BTN_ACTION_DISABLE, BTN_ACTION_KEYBOARD,
-    ButtonAction, DPIStage, RazerMouse,
+    ButtonAction, DPIStage, LED_LOGO, LED_SCROLL_WHEEL, RazerMouse,
 )
 from .profiles import Profile, ProfileStore
 from .transport import DiscoveredDevice, RazerTransport, discover
@@ -32,8 +32,8 @@ class OpenRazerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("openrazer-win")
-        self.geometry("520x600")
-        self.minsize(480, 560)
+        self.geometry("560x780")
+        self.minsize(520, 720)
 
         self.devices: list[DiscoveredDevice] = []
         self.current_device: DiscoveredDevice | None = None
@@ -103,6 +103,47 @@ class OpenRazerGUI(tk.Tk):
                 poll, text=f"{hz} Hz", variable=self.poll_var, value=hz,
             ).pack(side="left", padx=(0, 12))
         ttk.Button(poll, text="Apply polling", command=self._apply_polling).pack(side="left")
+
+        # Lighting
+        lighting = ttk.LabelFrame(root, text="Lighting", padding=PADDING)
+        lighting.pack(fill="x", pady=(0, PADDING))
+
+        ttk.Label(lighting, text="Wheel:").grid(row=0, column=0, sticky="w")
+        self.wheel_bright_var = tk.IntVar(value=178)
+        tk.Scale(
+            lighting, from_=0, to=255, orient="horizontal",
+            variable=self.wheel_bright_var, length=220, showvalue=True,
+        ).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(4, 8))
+
+        ttk.Label(lighting, text="Logo:").grid(row=1, column=0, sticky="w")
+        self.logo_bright_var = tk.IntVar(value=178)
+        tk.Scale(
+            lighting, from_=0, to=255, orient="horizontal",
+            variable=self.logo_bright_var, length=220, showvalue=True,
+        ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(4, 8))
+
+        ttk.Button(lighting, text="Apply brightness", command=self._apply_brightness).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(4, 8),
+        )
+
+        ttk.Label(lighting, text="Effect:").grid(row=3, column=0, sticky="w")
+        self.effect_var = tk.StringVar(value="static")
+        ttk.Combobox(
+            lighting, textvariable=self.effect_var,
+            values=["none", "static", "spectrum", "wave"], state="readonly", width=10,
+        ).grid(row=3, column=1, sticky="w", padx=(4, 12))
+
+        ttk.Label(lighting, text="Colour:").grid(row=3, column=2, sticky="w")
+        self.color_hex_var = tk.StringVar(value="#00ffff")
+        self.color_btn = tk.Button(
+            lighting, text="  Pick  ", bg=self.color_hex_var.get(),
+            command=self._pick_color, width=8, relief="raised",
+        )
+        self.color_btn.grid(row=3, column=3, sticky="w", padx=(4, 0))
+
+        ttk.Button(lighting, text="Apply effect", command=self._apply_effect).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0),
+        )
 
         # Buttons launch
         btn_row = ttk.Frame(root)
@@ -180,11 +221,12 @@ class OpenRazerGUI(tk.Tk):
                     dpi_x, dpi_y = m.get_current_dpi()
                     active, stages = m.get_dpi_stages()
                     poll = m.get_polling_rate()
+                    brightness = m.get_all_brightness()
             except Exception as e:
                 self.after(0, lambda: self._status(f"Read failed: {e}"))
                 return
             self.after(0, lambda: self._render_device(
-                firmware, serial, dpi_x, dpi_y, active, stages, poll,
+                firmware, serial, dpi_x, dpi_y, active, stages, poll, brightness,
             ))
 
         threading.Thread(target=work, daemon=True).start()
@@ -192,6 +234,7 @@ class OpenRazerGUI(tk.Tk):
     def _render_device(
         self, firmware: str, serial: str,
         dpi_x: int, dpi_y: int, active: int, stages: list[DPIStage], poll: int,
+        brightness: dict[int, int] | None = None,
     ) -> None:
         dev = self.current_device
         if dev is None:
@@ -217,6 +260,12 @@ class OpenRazerGUI(tk.Tk):
 
         if poll:
             self.poll_var.set(poll)
+
+        if brightness:
+            if LED_SCROLL_WHEEL in brightness:
+                self.wheel_bright_var.set(brightness[LED_SCROLL_WHEEL])
+            if LED_LOGO in brightness:
+                self.logo_bright_var.set(brightness[LED_LOGO])
 
         self._status(f"{dev.spec.name}: read OK.")
 
@@ -355,6 +404,73 @@ class OpenRazerGUI(tk.Tk):
         if self.store.delete(name):
             self._status(f"Deleted profile '{name}'.")
             self._reload_profile_list()
+
+    # -- lighting --------------------------------------------------------
+
+    def _pick_color(self) -> None:
+        from tkinter import colorchooser
+        rgb, hex_col = colorchooser.askcolor(
+            color=self.color_hex_var.get(), parent=self, title="Pick colour",
+        )
+        if hex_col:
+            self.color_hex_var.set(hex_col)
+            self.color_btn.config(bg=hex_col)
+
+    def _apply_brightness(self) -> None:
+        dev = self.current_device
+        if dev is None:
+            return
+        wheel = self.wheel_bright_var.get()
+        logo = self.logo_bright_var.get()
+        self._status(f"Setting brightness wheel={wheel} logo={logo}…")
+
+        def work():
+            try:
+                with RazerTransport(dev) as t:
+                    m = RazerMouse(t)
+                    m.set_brightness(wheel, led=LED_SCROLL_WHEEL)
+                    m.set_brightness(logo, led=LED_LOGO)
+            except Exception as e:
+                self.after(0, lambda: self._status(f"Brightness set failed: {e}"))
+                return
+            self.after(0, lambda: self._status(
+                f"Brightness applied: wheel={wheel}, logo={logo}."
+            ))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_effect(self) -> None:
+        dev = self.current_device
+        if dev is None:
+            return
+        effect = self.effect_var.get()
+        hex_col = self.color_hex_var.get()
+        try:
+            r = int(hex_col[1:3], 16)
+            g = int(hex_col[3:5], 16)
+            b = int(hex_col[5:7], 16)
+        except (ValueError, IndexError):
+            r, g, b = 0, 255, 255
+        self._status(f"Setting effect '{effect}'…")
+
+        def work():
+            try:
+                with RazerTransport(dev) as t:
+                    m = RazerMouse(t)
+                    if effect == "none":
+                        m.set_effect_none()
+                    elif effect == "static":
+                        m.set_effect_static(r, g, b)
+                    elif effect == "spectrum":
+                        m.set_effect_spectrum()
+                    elif effect == "wave":
+                        m.set_effect_wave(direction=1)
+            except Exception as e:
+                self.after(0, lambda: self._status(f"Effect set failed: {e}"))
+                return
+            self.after(0, lambda: self._status(f"Effect '{effect}' applied."))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # -- button tester ---------------------------------------------------
 

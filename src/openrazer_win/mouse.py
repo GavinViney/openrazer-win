@@ -211,11 +211,16 @@ class RazerMouse:
 
     # ---- Lighting: brightness -----------------------------------------
 
-    def get_brightness(self, led: int = LED_ZERO, store: int = VARSTORE) -> int:
-        """Read backlight brightness (0..255) for a given LED zone.
+    # Brightness is addressed per-LED-zone on Basilisk V3, not on LED_ZERO
+    # as the fork's fetch of razerchromacommon.c initially suggested. Probe
+    # 2026-08-30: LED_ZERO returns FAILURE for brightness get; only the
+    # per-zone LED ids (SCROLL_WHEEL, LOGO) return valid data.
 
-        On Basilisk V3 the whole underglow + logo + wheel are addressed via
-        LED_ZERO (0x00) as a single extended-matrix zone.
+    def get_brightness(self, led: int, store: int = NOSTORE) -> int:
+        """Read backlight brightness (0..255) for a specific LED zone.
+
+        `led` must be a real zone id — LED_SCROLL_WHEEL, LED_LOGO, etc.
+        LED_ZERO is not valid for GET on this device family.
         """
         args = bytes([store, led, 0x00])
         resp = self._send(
@@ -223,14 +228,32 @@ class RazerMouse:
         )
         return resp.arguments[2]
 
-    def set_brightness(self, brightness: int, led: int = LED_ZERO,
+    def set_brightness(self, brightness: int, led: int,
                        store: int = VARSTORE) -> None:
+        """Write backlight brightness for one LED zone. Use VARSTORE for
+        persistence, NOSTORE for volatile."""
         if not 0 <= brightness <= 255:
             raise ValueError(f"brightness {brightness} outside 0..255")
         args = bytes([store, led, brightness & 0xFF])
         self._send(
             CMD_CLASS_LED, CMD_LED_SET_BRIGHTNESS, data_size=0x03, args=args,
         )
+
+    def get_all_brightness(self) -> dict[int, int]:
+        """Convenience: read brightness for every zone the device exposes.
+        Returns {LED_id: brightness} for whichever zones respond."""
+        result: dict[int, int] = {}
+        for led in (LED_SCROLL_WHEEL, LED_LOGO, LED_BACKLIGHT):
+            try:
+                result[led] = self.get_brightness(led)
+            except IOError:
+                pass
+        return result
+
+    def set_all_brightness(self, brightness: int, store: int = VARSTORE) -> None:
+        """Convenience: set every responsive zone to the same brightness."""
+        for led in self.get_all_brightness().keys():
+            self.set_brightness(brightness, led, store=store)
 
     # ---- Lighting: effects (class 0x0F extended matrix) ---------------
 
