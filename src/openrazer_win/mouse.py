@@ -301,6 +301,59 @@ class RazerMouse:
         args = bytes([store, led, EFFECT_REACTIVE, 0x00, speed, 0x01, r, g, b])
         self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x09, args=args)
 
+    # ---- Lighting: underglow (extended matrix custom frame) -----------
+
+    # BV3's 11-LED underglow strip is a 1x11 matrix addressed via the
+    # extended-matrix custom-frame path (class 0x0F / id 0x03) followed
+    # by an activate-custom-effect command. Not covered by the LED_ZERO
+    # effect writers — those only reach wheel + logo. Per fork's read
+    # of razermouse_driver.c and razerchromacommon.c.
+
+    def set_custom_frame(self, row: int, start_col: int, stop_col: int,
+                          rgb_data: bytes) -> None:
+        """Write a slice of the custom LED framebuffer.
+
+        rgb_data length must be (stop_col - start_col + 1) * 3 bytes:
+        R, G, B per LED in column order. Follow with set_effect_custom()
+        to activate the frame — the write is buffered until then.
+        """
+        expected = (stop_col - start_col + 1) * 3
+        if len(rgb_data) != expected:
+            raise ValueError(
+                f"rgb_data must be {expected} bytes for cols {start_col}..{stop_col}, "
+                f"got {len(rgb_data)}"
+            )
+        args = bytearray(80)
+        # args[0], args[1] stay 0 per OpenRazer helper defaults
+        args[2] = row & 0xFF
+        args[3] = start_col & 0xFF
+        args[4] = stop_col & 0xFF
+        args[5:5 + len(rgb_data)] = rgb_data
+        self._send(
+            CMD_CLASS_LED, CMD_LED_SET_CUSTOM_FRAME,
+            data_size=0x47, args=bytes(args),
+        )
+
+    def set_effect_custom(self) -> None:
+        """Activate the buffered custom frame. Call after set_custom_frame()."""
+        args = bytes([NOSTORE, LED_ZERO, EFFECT_CUSTOM])
+        self._send(
+            CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x0C, args=args,
+        )
+
+    def set_underglow_static(self, r: int, g: int, b: int,
+                              num_leds: int = 11) -> None:
+        """Set the underglow strip to a solid colour. Two writes: the
+        custom frame with `num_leds` identical RGB triplets, then activate."""
+        _validate_rgb(r, g, b)
+        rgb = bytes([r, g, b] * num_leds)
+        self.set_custom_frame(row=0, start_col=0, stop_col=num_leds - 1, rgb_data=rgb)
+        self.set_effect_custom()
+
+    def set_underglow_off(self, num_leds: int = 11) -> None:
+        """Blank the underglow strip (all LEDs 0,0,0) via custom frame."""
+        self.set_underglow_static(0, 0, 0, num_leds=num_leds)
+
     # ---- Buttons (class 0x02) — empirically decoded on Basilisk V3 ----
 
     def get_button_action(self, button_id: int, profile: int = 0) -> "ButtonAction":

@@ -28,12 +28,22 @@ from .transport import DiscoveredDevice, RazerTransport, discover
 PADDING = 8
 
 
+def _hex_to_rgb(hex_col: str) -> tuple[int, int, int]:
+    h = hex_col.lstrip("#")
+    if len(h) != 6:
+        return (0, 0, 0)
+    try:
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    except ValueError:
+        return (0, 0, 0)
+
+
 class OpenRazerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("openrazer-win")
-        self.geometry("560x780")
-        self.minsize(520, 720)
+        self.geometry("620x920")
+        self.minsize(600, 860)
 
         self.devices: list[DiscoveredDevice] = []
         self.current_device: DiscoveredDevice | None = None
@@ -141,9 +151,60 @@ class OpenRazerGUI(tk.Tk):
         )
         self.color_btn.grid(row=3, column=3, sticky="w", padx=(4, 0))
 
+        self.include_underglow_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            lighting, text="Include underglow (uniform colour for effect above)",
+            variable=self.include_underglow_var,
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
         ttk.Button(lighting, text="Apply effect", command=self._apply_effect).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0),
+            row=5, column=0, columnspan=2, sticky="w", pady=(4, 0),
         )
+
+        # Per-LED colour grid
+        per_led = ttk.LabelFrame(root, text="Per-LED colours (overrides effect above)", padding=PADDING)
+        per_led.pack(fill="x", pady=(0, PADDING))
+
+        # Wheel + logo row
+        wl_row = ttk.Frame(per_led)
+        wl_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(wl_row, text="Wheel:").pack(side="left")
+        self.wheel_led_color = "#00ffff"
+        self.wheel_led_btn = tk.Button(
+            wl_row, text="  ", bg=self.wheel_led_color, width=3, relief="raised",
+            command=lambda: self._pick_led_color("wheel"),
+        )
+        self.wheel_led_btn.pack(side="left", padx=(4, 16))
+
+        ttk.Label(wl_row, text="Logo:").pack(side="left")
+        self.logo_led_color = "#00ffff"
+        self.logo_led_btn = tk.Button(
+            wl_row, text="  ", bg=self.logo_led_color, width=3, relief="raised",
+            command=lambda: self._pick_led_color("logo"),
+        )
+        self.logo_led_btn.pack(side="left", padx=(4, 0))
+
+        # Underglow strip: 11 swatches left-to-right
+        under_frame = ttk.Frame(per_led)
+        under_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(under_frame, text="Underglow (L → R):").pack(side="left", padx=(0, 6))
+        self.underglow_colors: list[str] = ["#00ffff"] * 11
+        self.underglow_btns: list[tk.Button] = []
+        for i in range(11):
+            b = tk.Button(
+                under_frame, text=str(i + 1), bg=self.underglow_colors[i],
+                width=2, relief="raised",
+                command=lambda idx=i: self._pick_led_color(f"under_{idx}"),
+            )
+            b.pack(side="left", padx=1)
+            self.underglow_btns.append(b)
+
+        # Actions row
+        actions = ttk.Frame(per_led)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Sync all → wheel colour", command=self._sync_all_to_wheel).pack(side="left")
+        ttk.Button(actions, text="All off", command=self._all_leds_off).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Apply per-LED", command=self._apply_per_led).pack(side="left", padx=(16, 0))
 
         # Buttons launch
         btn_row = ttk.Frame(root)
@@ -439,6 +500,74 @@ class OpenRazerGUI(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _pick_led_color(self, target: str) -> None:
+        from tkinter import colorchooser
+        current = self._get_led_color(target)
+        _, hex_col = colorchooser.askcolor(color=current, parent=self, title="Pick LED colour")
+        if not hex_col:
+            return
+        self._set_led_color(target, hex_col)
+
+    def _get_led_color(self, target: str) -> str:
+        if target == "wheel":
+            return self.wheel_led_color
+        if target == "logo":
+            return self.logo_led_color
+        if target.startswith("under_"):
+            return self.underglow_colors[int(target.split("_")[1])]
+        return "#000000"
+
+    def _set_led_color(self, target: str, hex_col: str) -> None:
+        if target == "wheel":
+            self.wheel_led_color = hex_col
+            self.wheel_led_btn.config(bg=hex_col)
+        elif target == "logo":
+            self.logo_led_color = hex_col
+            self.logo_led_btn.config(bg=hex_col)
+        elif target.startswith("under_"):
+            idx = int(target.split("_")[1])
+            self.underglow_colors[idx] = hex_col
+            self.underglow_btns[idx].config(bg=hex_col)
+
+    def _sync_all_to_wheel(self) -> None:
+        col = self.wheel_led_color
+        self._set_led_color("logo", col)
+        for i in range(11):
+            self._set_led_color(f"under_{i}", col)
+
+    def _all_leds_off(self) -> None:
+        for target in ("wheel", "logo"):
+            self._set_led_color(target, "#000000")
+        for i in range(11):
+            self._set_led_color(f"under_{i}", "#000000")
+
+    def _apply_per_led(self) -> None:
+        dev = self.current_device
+        if dev is None:
+            return
+        wheel_rgb = _hex_to_rgb(self.wheel_led_color)
+        logo_rgb = _hex_to_rgb(self.logo_led_color)
+        under_rgb = [_hex_to_rgb(c) for c in self.underglow_colors]
+        self._status("Writing per-LED colours…")
+
+        def work():
+            try:
+                with RazerTransport(dev) as t:
+                    m = RazerMouse(t)
+                    # Wheel and logo — try per-zone static writes first
+                    m.set_effect_static(*wheel_rgb, led=LED_SCROLL_WHEEL)
+                    m.set_effect_static(*logo_rgb, led=LED_LOGO)
+                    # Underglow — custom frame with 11 individual triplets
+                    rgb_bytes = b"".join(bytes(c) for c in under_rgb)
+                    m.set_custom_frame(row=0, start_col=0, stop_col=10, rgb_data=rgb_bytes)
+                    m.set_effect_custom()
+            except Exception as e:
+                self.after(0, lambda: self._status(f"Per-LED apply failed: {e}"))
+                return
+            self.after(0, lambda: self._status("Per-LED colours applied."))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _apply_effect(self) -> None:
         dev = self.current_device
         if dev is None:
@@ -453,22 +582,38 @@ class OpenRazerGUI(tk.Tk):
             r, g, b = 0, 255, 255
         self._status(f"Setting effect '{effect}'…")
 
+        include_underglow = self.include_underglow_var.get()
+
         def work():
             try:
                 with RazerTransport(dev) as t:
                     m = RazerMouse(t)
                     if effect == "none":
                         m.set_effect_none()
+                        if include_underglow:
+                            m.set_underglow_off()
                     elif effect == "static":
                         m.set_effect_static(r, g, b)
+                        if include_underglow:
+                            m.set_underglow_static(r, g, b)
                     elif effect == "spectrum":
                         m.set_effect_spectrum()
+                        # No spectrum equivalent for underglow custom frame;
+                        # leave underglow at whatever it currently shows.
                     elif effect == "wave":
                         m.set_effect_wave(direction=1)
+                        # Same — wave has no per-LED analog via custom frame.
             except Exception as e:
                 self.after(0, lambda: self._status(f"Effect set failed: {e}"))
                 return
-            self.after(0, lambda: self._status(f"Effect '{effect}' applied."))
+            self.after(0, lambda: self._status(
+                f"Effect '{effect}' applied" + (
+                    " (wheel+logo+underglow)." if include_underglow and effect in ("static", "none")
+                    else " (wheel+logo only — spectrum/wave don't apply to underglow strip)."
+                    if effect in ("spectrum", "wave")
+                    else "."
+                )
+            ))
 
         threading.Thread(target=work, daemon=True).start()
 
