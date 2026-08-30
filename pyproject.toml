@@ -28,5 +28,8 @@ dev = ["pytest>=7", "pyinstaller>=6"]
 [project.scripts]
 openrazer-win = "openrazer_win.cli:main"
 
+[project.gui-scripts]
+openrazer-win-gui = "openrazer_win.gui:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]

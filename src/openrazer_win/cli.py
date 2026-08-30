@@ -95,6 +95,11 @@ def cmd_poll(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .gui import main as gui_main
+    return gui_main()
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     dev = _one_mouse(args.device)
     with RazerTransport(dev) as t:
@@ -142,6 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = sub.add_parser("info", help="Print device info (firmware, serial, caps).")
     p_info.add_argument("--device", help="Match by device name substring or pid.")
     p_info.set_defaults(func=cmd_info)
+
+    p_gui = sub.add_parser("gui", help="Launch the tkinter GUI.")
+    p_gui.set_defaults(func=cmd_gui)
 
     return p
 
