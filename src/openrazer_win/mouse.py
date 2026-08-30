@@ -79,6 +79,38 @@ class DPIStage:
     dpi_y: int
 
 
+@dataclass
+class ButtonAction:
+    """One button binding as read from the mouse.
+
+    `action_type` values seen empirically on Basilisk V3:
+      0x00 = disabled
+      0x01 = default mouse function  (payload[0] = mouse button id)
+      0x02 = keyboard / HID          (payload[1] = HID keycode)
+    """
+    profile: int
+    button_id: int
+    action_type: int
+    sub_type: int
+    payload: bytes
+
+    @property
+    def summary(self) -> str:
+        if self.action_type == BTN_ACTION_DEFAULT:
+            return f"default mouse btn {self.payload[0]}"
+        if self.action_type == BTN_ACTION_KEYBOARD:
+            return f"HID key 0x{self.payload[1]:02x}"
+        if self.action_type == BTN_ACTION_DISABLE:
+            return "disabled"
+        return f"type 0x{self.action_type:02x} payload={self.payload.hex()}"
+
+
+def _validate_rgb(r: int, g: int, b: int) -> None:
+    for name, v in (("r", r), ("g", g), ("b", b)):
+        if not 0 <= v <= 255:
+            raise ValueError(f"{name} channel {v} outside 0..255")
+
+
 class RazerMouse:
     """High-level operations for one connected Razer mouse."""
 
@@ -176,6 +208,117 @@ class RazerMouse:
         resp = self._send(CMD_CLASS_STANDARD, CMD_GET_SERIAL, data_size=0x16)
         raw = resp.arguments[:22]
         return raw.rstrip(b"\x00").decode("ascii", errors="replace")
+
+    # ---- Lighting: brightness -----------------------------------------
+
+    def get_brightness(self, led: int = LED_ZERO, store: int = VARSTORE) -> int:
+        """Read backlight brightness (0..255) for a given LED zone.
+
+        On Basilisk V3 the whole underglow + logo + wheel are addressed via
+        LED_ZERO (0x00) as a single extended-matrix zone.
+        """
+        args = bytes([store, led, 0x00])
+        resp = self._send(
+            CMD_CLASS_LED, CMD_LED_GET_BRIGHTNESS, data_size=0x03, args=args,
+        )
+        return resp.arguments[2]
+
+    def set_brightness(self, brightness: int, led: int = LED_ZERO,
+                       store: int = VARSTORE) -> None:
+        if not 0 <= brightness <= 255:
+            raise ValueError(f"brightness {brightness} outside 0..255")
+        args = bytes([store, led, brightness & 0xFF])
+        self._send(
+            CMD_CLASS_LED, CMD_LED_SET_BRIGHTNESS, data_size=0x03, args=args,
+        )
+
+    # ---- Lighting: effects (class 0x0F extended matrix) ---------------
+
+    def set_effect_none(self, led: int = LED_ZERO, store: int = VARSTORE) -> None:
+        """Turn the LEDs off (accepts light being written to but shows none)."""
+        args = bytes([store, led, EFFECT_NONE])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x06, args=args)
+
+    def set_effect_static(self, r: int, g: int, b: int,
+                          led: int = LED_ZERO, store: int = VARSTORE) -> None:
+        """Solid colour. RGB each 0..255."""
+        _validate_rgb(r, g, b)
+        args = bytes([store, led, EFFECT_STATIC, 0x00, 0x00, 0x01, r, g, b])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x09, args=args)
+
+    def set_effect_spectrum(self, led: int = LED_ZERO,
+                            store: int = VARSTORE) -> None:
+        """Full-spectrum colour cycle."""
+        args = bytes([store, led, EFFECT_SPECTRUM])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x06, args=args)
+
+    def set_effect_wave(self, direction: int = 1, speed: int = 0x28,
+                        led: int = LED_ZERO, store: int = VARSTORE) -> None:
+        """Colour wave. direction: 1 = left, 2 = right (per OpenRazer). speed 0x28 default."""
+        if direction not in (0, 1, 2):
+            raise ValueError(f"wave direction must be 0, 1, or 2 (got {direction})")
+        args = bytes([store, led, EFFECT_WAVE, direction, speed])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x06, args=args)
+
+    def set_effect_breathing_single(self, r: int, g: int, b: int,
+                                     led: int = LED_ZERO,
+                                     store: int = VARSTORE) -> None:
+        """Breathing fade on a single colour. Not wired for BV3 in OpenRazer;
+        try-it-and-see per the fork's note."""
+        _validate_rgb(r, g, b)
+        args = bytes([store, led, EFFECT_BREATHING, 0x01, 0x00, 0x01, r, g, b])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x09, args=args)
+
+    def set_effect_reactive(self, r: int, g: int, b: int, speed: int = 0x02,
+                            led: int = LED_ZERO, store: int = VARSTORE) -> None:
+        """Flash on click. Not wired for BV3 in OpenRazer; try-it-and-see."""
+        _validate_rgb(r, g, b)
+        if not 1 <= speed <= 4:
+            raise ValueError(f"reactive speed must be 1..4 (got {speed})")
+        args = bytes([store, led, EFFECT_REACTIVE, 0x00, speed, 0x01, r, g, b])
+        self._send(CMD_CLASS_LED, CMD_LED_SET_EFFECT, data_size=0x09, args=args)
+
+    # ---- Buttons (class 0x02) — empirically decoded on Basilisk V3 ----
+
+    def get_button_action(self, button_id: int, profile: int = 0) -> "ButtonAction":
+        """Read what physical button `button_id` is bound to in `profile`."""
+        args = bytes([profile & 0xFF, button_id & 0xFF])
+        resp = self._send(
+            CMD_CLASS_BUTTON, CMD_BUTTON_GET_MAPPING, data_size=0x02, args=args,
+        )
+        # Response layout (empirical, BV3):
+        #   arg[0]=profile arg[1]=button_id arg[2]=00
+        #   arg[3]=action_type arg[4]=sub_type arg[5..]=code bytes
+        action_type = resp.arguments[3]
+        sub_type = resp.arguments[4]
+        # Sub_type is where the meaningful payload starts. For type=0x01 (default)
+        # the code is arg[5] (mouse button id). For type=0x02 (keyboard) the code
+        # is arg[6] (HID keycode). Store both raw payload bytes for callers who
+        # want the full detail without a per-type decoder here.
+        payload = bytes(resp.arguments[5:9])
+        return ButtonAction(
+            profile=profile, button_id=button_id,
+            action_type=action_type, sub_type=sub_type, payload=payload,
+        )
+
+    def set_button_action(self, button_id: int, action_type: int,
+                          payload: bytes, sub_type: int = 0x00,
+                          profile: int = 0) -> None:
+        """Write a button binding. `payload` is the type-specific data
+        (mouse button id for type=0x01, HID keycode for type=0x02, etc.)."""
+        args = bytearray(80)
+        args[0] = profile & 0xFF
+        args[1] = button_id & 0xFF
+        args[2] = 0x00
+        args[3] = action_type & 0xFF
+        args[4] = sub_type & 0xFF
+        for i, b in enumerate(payload[:75]):
+            args[5 + i] = b
+        # data_size for a keyboard remap is 0x08 empirically; a default binding
+        # is 0x06. Use max seen (0x0A) so we don't chop off longer action payloads.
+        self._send(
+            CMD_CLASS_BUTTON, CMD_BUTTON_SET_MAPPING, data_size=0x0A, args=bytes(args),
+        )
 
     # ---- internals -----------------------------------------------------
 

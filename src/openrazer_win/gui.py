@@ -15,7 +15,12 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .mouse import DPIStage, RazerMouse
+import datetime as _dt
+
+from .mouse import (
+    BTN_ACTION_DEFAULT, BTN_ACTION_DISABLE, BTN_ACTION_KEYBOARD,
+    ButtonAction, DPIStage, RazerMouse,
+)
 from .profiles import Profile, ProfileStore
 from .transport import DiscoveredDevice, RazerTransport, discover
 
@@ -98,6 +103,12 @@ class OpenRazerGUI(tk.Tk):
                 poll, text=f"{hz} Hz", variable=self.poll_var, value=hz,
             ).pack(side="left", padx=(0, 12))
         ttk.Button(poll, text="Apply polling", command=self._apply_polling).pack(side="left")
+
+        # Buttons launch
+        btn_row = ttk.Frame(root)
+        btn_row.pack(fill="x", pady=(0, PADDING))
+        ttk.Button(btn_row, text="Test + remap buttons…", command=self._open_button_tester).pack(side="left")
+        ttk.Label(btn_row, text="   (opens a window to see button events and write remaps)").pack(side="left")
 
         # Profiles
         prof = ttk.LabelFrame(root, text="Profiles", padding=PADDING)
@@ -345,7 +356,311 @@ class OpenRazerGUI(tk.Tk):
             self._status(f"Deleted profile '{name}'.")
             self._reload_profile_list()
 
+    # -- button tester ---------------------------------------------------
+
+    def _open_button_tester(self) -> None:
+        if self.current_device is None:
+            messagebox.showinfo("No device", "Select a device first.")
+            return
+        ButtonTestWindow(self, self.current_device)
+
     # -- misc ------------------------------------------------------------
+
+    def _status(self, msg: str) -> None:
+        self.status_var.set(msg)
+
+
+class ButtonTestWindow(tk.Toplevel):
+    """Test + remap tool. Live event log for physical-button-ID mapping,
+    current bindings table, and a write form for remaps.
+
+    First-time write pattern: read current, write same value back as a no-op
+    verification, then write the real change once the round-trip is confirmed.
+    """
+
+    BTN_IDS_TO_SCAN = list(range(1, 12))
+
+    def __init__(self, parent: OpenRazerGUI, device: DiscoveredDevice):
+        super().__init__(parent)
+        self.parent_gui = parent
+        self.device = device
+        self.title(f"Buttons — {device.spec.name}")
+        self.geometry("640x680")
+        self.transient(parent)
+
+        self._build()
+        self.after(50, self._reload_bindings)
+
+    # ---- layout ----
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=PADDING)
+        root.pack(fill="both", expand=True)
+
+        # Live event log
+        log_frame = ttk.LabelFrame(
+            root, text="Live event log — click inside, then press keys or mouse buttons",
+            padding=PADDING,
+        )
+        log_frame.pack(fill="both", expand=True, pady=(0, PADDING))
+
+        self.log_text = tk.Text(log_frame, height=10, wrap="none", font=("Consolas", 9))
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.insert("end", "(click here, then press keys / mouse buttons to see what Windows reports)\n")
+        self.log_text.bind("<KeyPress>", self._on_key)
+        self.log_text.bind("<Button>", self._on_mouse)
+        self.log_text.bind("<MouseWheel>", self._on_wheel)
+
+        log_row = ttk.Frame(root)
+        log_row.pack(fill="x", pady=(0, PADDING))
+        ttk.Button(log_row, text="Clear log", command=self._clear_log).pack(side="left")
+        self.capture_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            log_row, text="Auto-fill 'Payload' from next key press",
+            variable=self.capture_var,
+        ).pack(side="left", padx=(12, 0))
+
+        # Current bindings table
+        bindings_frame = ttk.LabelFrame(root, text="Current bindings (profile 0)", padding=PADDING)
+        bindings_frame.pack(fill="both", expand=True, pady=(0, PADDING))
+        cols = ("id", "type", "summary", "raw")
+        self.tree = ttk.Treeview(bindings_frame, columns=cols, show="headings", height=8)
+        for c, w in zip(cols, (50, 80, 200, 200)):
+            self.tree.heading(c, text=c.upper())
+            self.tree.column(c, width=w, anchor="w")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+
+        ttk.Button(bindings_frame, text="Reload bindings", command=self._reload_bindings).pack(anchor="w", pady=(6, 0))
+
+        # Remap form
+        remap = ttk.LabelFrame(root, text="Remap", padding=PADDING)
+        remap.pack(fill="x")
+
+        ttk.Label(remap, text="Button ID:").grid(row=0, column=0, sticky="w")
+        self.btn_var = tk.IntVar(value=1)
+        self.btn_combo = ttk.Combobox(
+            remap, textvariable=self.btn_var, width=5, state="readonly",
+            values=self.BTN_IDS_TO_SCAN,
+        )
+        self.btn_combo.grid(row=0, column=1, padx=(4, 12), sticky="w")
+
+        ttk.Label(remap, text="Action:").grid(row=0, column=2, sticky="w")
+        self.action_var = tk.StringVar(value="default")
+        self.action_combo = ttk.Combobox(
+            remap, textvariable=self.action_var, width=12, state="readonly",
+            values=("default", "keyboard", "disable"),
+        )
+        self.action_combo.grid(row=0, column=3, padx=(4, 12), sticky="w")
+
+        ttk.Label(remap, text="Payload (hex):").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.payload_var = tk.StringVar()
+        ttk.Entry(remap, textvariable=self.payload_var, width=10).grid(
+            row=1, column=1, padx=(4, 12), sticky="w", pady=(6, 0),
+        )
+        ttk.Label(
+            remap, text="e.g. 09 for HID key 'F', 01 for mouse button 1"
+        ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+        btn_row = ttk.Frame(remap)
+        btn_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Button(btn_row, text="Read only (no write)", command=self._read_selected).pack(side="left")
+        ttk.Button(btn_row, text="Write same value (no-op test)", command=self._write_noop).pack(side="left", padx=(6, 0))
+        ttk.Button(btn_row, text="Write from form (LIVE)", command=self._write_from_form).pack(side="left", padx=(6, 0))
+
+        # Status
+        self.status_var = tk.StringVar(value="Ready. Click the log to capture events.")
+        ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x", side="bottom")
+
+    # ---- event logging ----
+
+    def _log(self, kind: str, detail: str) -> None:
+        ts = _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self.log_text.insert("end", f"{ts}  {kind:6s}  {detail}\n")
+        self.log_text.see("end")
+
+    def _on_key(self, event) -> str:
+        self._log("KEY", f"keysym={event.keysym!r:12s}  keycode={event.keycode}  char={event.char!r}")
+        if self.capture_var.get():
+            self.payload_var.set(f"{event.keycode & 0xFF:02x}")
+            self.action_var.set("keyboard")
+            self.capture_var.set(False)
+            self._status(f"Captured keycode 0x{event.keycode & 0xFF:02x} into payload.")
+        return "break"
+
+    def _on_mouse(self, event) -> None:
+        self._log("MOUSE", f"button={event.num}  x={event.x} y={event.y}")
+
+    def _on_wheel(self, event) -> None:
+        self._log("WHEEL", f"delta={event.delta}")
+
+    def _clear_log(self) -> None:
+        self.log_text.delete("1.0", "end")
+
+    # ---- bindings table ----
+
+    def _reload_bindings(self) -> None:
+        self._status("Reading bindings…")
+        for r in self.tree.get_children():
+            self.tree.delete(r)
+
+        def work():
+            rows: list[ButtonAction | tuple[int, str]] = []
+            with RazerTransport(self.device) as t:
+                m = RazerMouse(t)
+                for bid in self.BTN_IDS_TO_SCAN:
+                    try:
+                        rows.append(m.get_button_action(button_id=bid, profile=0))
+                    except Exception as e:
+                        rows.append((bid, f"failed: {e}"))
+            self.after(0, lambda: self._render_bindings(rows))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_bindings(self, rows) -> None:
+        for r in rows:
+            if isinstance(r, ButtonAction):
+                type_name = {
+                    BTN_ACTION_DEFAULT: "default", BTN_ACTION_KEYBOARD: "keyboard",
+                    BTN_ACTION_DISABLE: "disabled",
+                }.get(r.action_type, f"0x{r.action_type:02x}")
+                self.tree.insert("", "end", values=(r.button_id, type_name, r.summary, r.payload.hex()))
+            else:
+                bid, msg = r
+                self.tree.insert("", "end", values=(bid, "-", msg, ""))
+        self._status("Bindings read.")
+
+    def _on_row_select(self, event) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vals = self.tree.item(sel[0], "values")
+        try:
+            self.btn_var.set(int(vals[0]))
+        except (ValueError, IndexError):
+            pass
+
+    # ---- read / write ----
+
+    def _read_selected(self) -> None:
+        bid = self.btn_var.get()
+        self._status(f"Reading button {bid}…")
+
+        def work():
+            try:
+                with RazerTransport(self.device) as t:
+                    a = RazerMouse(t).get_button_action(button_id=bid, profile=0)
+            except Exception as e:
+                self.after(0, lambda: self._status(f"Read failed: {e}"))
+                return
+            self.after(0, lambda: self._show_read(a))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_read(self, a: ButtonAction) -> None:
+        type_name = {
+            BTN_ACTION_DEFAULT: "default", BTN_ACTION_KEYBOARD: "keyboard",
+            BTN_ACTION_DISABLE: "disabled",
+        }.get(a.action_type, f"0x{a.action_type:02x}")
+        self.action_var.set(type_name if type_name in ("default", "keyboard", "disable") else "keyboard")
+        if a.action_type == BTN_ACTION_DEFAULT:
+            self.payload_var.set(f"{a.payload[0]:02x}")
+        elif a.action_type == BTN_ACTION_KEYBOARD:
+            self.payload_var.set(f"{a.payload[1]:02x}")
+        else:
+            self.payload_var.set(a.payload[:2].hex())
+        self._status(f"Button {a.button_id}: {a.summary}  (form populated)")
+
+    def _write_noop(self) -> None:
+        """Read current binding, immediately write it back unchanged, re-read.
+        Safest possible write test — confirms the write path works with zero
+        risk of altering behaviour."""
+        bid = self.btn_var.get()
+        self._status(f"No-op write test on button {bid}…")
+
+        def work():
+            try:
+                with RazerTransport(self.device) as t:
+                    m = RazerMouse(t)
+                    before = m.get_button_action(button_id=bid, profile=0)
+                    m.set_button_action(
+                        button_id=bid,
+                        action_type=before.action_type,
+                        payload=before.payload,
+                        sub_type=before.sub_type,
+                        profile=0,
+                    )
+                    after = m.get_button_action(button_id=bid, profile=0)
+            except Exception as e:
+                self.after(0, lambda: self._status(f"No-op write failed: {e}"))
+                return
+            if (after.action_type == before.action_type and
+                    after.payload == before.payload):
+                self.after(0, lambda: self._status(
+                    f"No-op write OK: btn {bid} unchanged after round-trip "
+                    f"({before.summary})."
+                ))
+            else:
+                self.after(0, lambda: self._status(
+                    f"WRITE PATH MISMATCH on btn {bid}: before={before.summary} "
+                    f"after={after.summary} — protocol layout wrong for SET."
+                ))
+            self.after(0, self._reload_bindings)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _write_from_form(self) -> None:
+        bid = self.btn_var.get()
+        action = self.action_var.get()
+        raw = self.payload_var.get().strip().replace("0x", "").replace(" ", "")
+        try:
+            code = int(raw, 16) & 0xFF
+        except ValueError:
+            messagebox.showerror("Bad payload", "Payload must be a hex byte (e.g. '09').")
+            return
+
+        if action == "default":
+            action_type = BTN_ACTION_DEFAULT
+            sub_type = 0x01
+            payload = bytes([code, 0x00, 0x00, 0x00])
+        elif action == "keyboard":
+            action_type = BTN_ACTION_KEYBOARD
+            sub_type = 0x02
+            payload = bytes([0x00, code, 0x00, 0x00])
+        else:  # disable
+            action_type = BTN_ACTION_DISABLE
+            sub_type = 0x00
+            payload = bytes([0x00, 0x00, 0x00, 0x00])
+
+        if not messagebox.askyesno(
+            "Write button binding",
+            f"Write btn {bid} = {action} 0x{code:02x} to the mouse?\n\n"
+            "This is a live write. If the format is wrong the button may "
+            "stop responding until reset.",
+            parent=self,
+        ):
+            return
+
+        self._status(f"Writing btn {bid}…")
+
+        def work():
+            try:
+                with RazerTransport(self.device) as t:
+                    m = RazerMouse(t)
+                    m.set_button_action(
+                        button_id=bid, action_type=action_type,
+                        payload=payload, sub_type=sub_type, profile=0,
+                    )
+                    after = m.get_button_action(button_id=bid, profile=0)
+            except Exception as e:
+                self.after(0, lambda: self._status(f"Write failed: {e}"))
+                return
+            self.after(0, lambda: self._status(
+                f"Wrote btn {bid}. Read-back: {after.summary}"
+            ))
+            self.after(0, self._reload_bindings)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _status(self, msg: str) -> None:
         self.status_var.set(msg)
