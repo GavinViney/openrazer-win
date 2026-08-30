@@ -1,0 +1,23 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+
+openrazer-win — Windows utility for configuring Razer mice
+Copyright (C) 2026 Gavin Viney
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+The full text of the GNU General Public License version 3 is available at
+https://www.gnu.org/licenses/gpl-3.0.txt and will be dropped in-tree as
+COPYING before the first tagged release.
+
+Protocol knowledge in this project is derived from documentation and
+source of OpenRazer (https://openrazer.github.io/) and libratbag
+(https://github.com/libratbag/libratbag), both under GPLv2 and later.
+This project honours the ecosystem license.
