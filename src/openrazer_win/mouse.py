@@ -21,10 +21,48 @@ CMD_GET_SERIAL = 0x82             # class 0x00
 
 CMD_MOUSE_SET_DPI_XY = 0x05       # class 0x04
 CMD_MOUSE_GET_DPI_XY = 0x85       # class 0x04
-CMD_MOUSE_SET_DPI_STAGES = 0x06   # class 0x04
-CMD_MOUSE_GET_DPI_STAGES = 0x86   # class 0x04
+CMD_MOUSE_SET_DPI_STAGES = 0x06   # class 0x04 — OpenRazer-documented (SET side unverified on BV3)
+CMD_MOUSE_GET_DPI_STAGES = 0x83   # class 0x04 — Basilisk V3 empirical: 0x83 returns full 5-stage table; 0x86 returns only the active stage
 CMD_MOUSE_SET_POLL_RATE = 0x05    # class 0x00 (yes, shares an id with mouse cmds — different class)
 CMD_MOUSE_GET_POLL_RATE = 0x85    # class 0x00
+
+# Button remapping (class 0x02) — empirically decoded on Basilisk V3
+CMD_BUTTON_SET_MAPPING = 0x0C
+CMD_BUTTON_GET_MAPPING = 0x8C
+
+# Lighting (class 0x0F extended matrix) — per OpenRazer razerchromacommon.c
+CMD_LED_SET_EFFECT = 0x02         # class 0x0F
+CMD_LED_SET_CUSTOM_FRAME = 0x03   # class 0x0F
+CMD_LED_SET_BRIGHTNESS = 0x04     # class 0x0F
+CMD_LED_GET_BRIGHTNESS = 0x84     # class 0x0F
+
+CMD_CLASS_BUTTON = 0x02
+CMD_CLASS_LED = 0x0F
+
+# LED zone constants (from razercommon.h)
+LED_ZERO = 0x00
+LED_SCROLL_WHEEL = 0x01
+LED_LOGO = 0x04
+LED_BACKLIGHT = 0x05
+
+# Storage modes
+NOSTORE = 0x00
+VARSTORE = 0x01
+
+# Lighting effect ids (arg[2] of class 0x0F id 0x02, Basilisk V3 wired)
+EFFECT_NONE = 0x00
+EFFECT_STATIC = 0x01
+EFFECT_BREATHING = 0x02
+EFFECT_SPECTRUM = 0x03
+EFFECT_WAVE = 0x04
+EFFECT_REACTIVE = 0x05
+EFFECT_STARLIGHT = 0x07
+EFFECT_CUSTOM = 0x08
+
+# Button action types (empirically decoded on Basilisk V3)
+BTN_ACTION_DEFAULT = 0x01   # default mouse function
+BTN_ACTION_KEYBOARD = 0x02  # keyboard/HID key (payload: HID keycode)
+BTN_ACTION_DISABLE = 0x00   # button disabled
 
 
 POLL_RATE_1000 = 0x01
