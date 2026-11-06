@@ -99,7 +99,9 @@ class ButtonAction:
         if self.action_type == BTN_ACTION_DEFAULT:
             return f"default mouse btn {self.payload[0]}"
         if self.action_type == BTN_ACTION_KEYBOARD:
-            return f"HID key 0x{self.payload[1]:02x}"
+            from .hid_keys import hid_name
+            code = self.payload[1]
+            return f"HID 0x{code:02x} ({hid_name(code)})"
         if self.action_type == BTN_ACTION_DISABLE:
             return "disabled"
         return f"type 0x{self.action_type:02x} payload={self.payload.hex()}"

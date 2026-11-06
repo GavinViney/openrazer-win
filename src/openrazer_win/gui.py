@@ -17,6 +17,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 import datetime as _dt
 
+from . import button_labels
+from .hid_keys import HID_NAMES, hid_name, vk_to_hid
 from .mouse import (
     BTN_ACTION_DEFAULT, BTN_ACTION_DISABLE, BTN_ACTION_KEYBOARD,
     ButtonAction, DPIStage, LED_LOGO, LED_SCROLL_WHEEL, RazerMouse,
@@ -42,8 +44,10 @@ class OpenRazerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("openrazer-win")
-        self.geometry("620x920")
-        self.minsize(600, 860)
+        self.geometry("1120x660")
+        self.minsize(960, 600)
+
+        self._apply_dark_theme()
 
         self.devices: list[DiscoveredDevice] = []
         self.current_device: DiscoveredDevice | None = None
@@ -51,6 +55,62 @@ class OpenRazerGUI(tk.Tk):
 
         self._build()
         self.after(50, self._refresh_devices)
+
+    def _apply_dark_theme(self) -> None:
+        """Dark palette applied globally via ttk.Style + tk_setPalette. Covers both
+        the main window and the ButtonTestWindow (ttk styles + tk defaults are
+        process-wide). Colour swatches keep their explicit bg= and stay vivid."""
+        BG = "#1e1e1e"      # window background
+        FG = "#e0e0e0"      # primary text
+        FIELD = "#2b2b2b"   # entry / combobox / treeview / text backgrounds
+        ACTIVE = "#3c3c3c"  # borders, hover, headings
+        SELECT = "#00ffff"  # selection accent (cyberpunk cyan — matches nx-deck)
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")  # 'clam' allows full colour control; vista/xpnative don't
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=BG, foreground=FG, fieldbackground=FIELD,
+                        bordercolor=ACTIVE, lightcolor=ACTIVE, darkcolor=ACTIVE,
+                        troughcolor=FIELD, insertcolor=FG, selectbackground=SELECT,
+                        selectforeground=BG)
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("TLabelframe", background=BG, foreground=FG, bordercolor=ACTIVE)
+        style.configure("TLabelframe.Label", background=BG, foreground=FG)
+        style.configure("TButton", background=FIELD, foreground=FG, bordercolor=ACTIVE, focuscolor=ACTIVE)
+        style.map("TButton",
+                  background=[("active", ACTIVE), ("pressed", ACTIVE)],
+                  foreground=[("disabled", "#777777")])
+        style.configure("TEntry", fieldbackground=FIELD, foreground=FG, insertcolor=FG, bordercolor=ACTIVE)
+        style.configure("TCombobox", fieldbackground=FIELD, foreground=FG,
+                        background=FIELD, arrowcolor=FG, bordercolor=ACTIVE)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", FIELD)],
+                  foreground=[("readonly", FG)],
+                  selectbackground=[("readonly", FIELD)])
+        style.configure("TRadiobutton", background=BG, foreground=FG, indicatorcolor=FIELD)
+        style.map("TRadiobutton", background=[("active", BG)], indicatorcolor=[("selected", SELECT)])
+        style.configure("TCheckbutton", background=BG, foreground=FG, indicatorcolor=FIELD)
+        style.map("TCheckbutton", background=[("active", BG)], indicatorcolor=[("selected", SELECT)])
+        style.configure("Treeview", background=FIELD, foreground=FG, fieldbackground=FIELD, bordercolor=ACTIVE)
+        style.configure("Treeview.Heading", background=ACTIVE, foreground=FG, bordercolor=BG)
+        style.map("Treeview", background=[("selected", SELECT)], foreground=[("selected", BG)])
+        style.configure("TScrollbar", background=FIELD, troughcolor=BG, arrowcolor=FG, bordercolor=ACTIVE)
+
+        # tk (non-ttk) widget defaults — tk.Scale, tk.Text, tk.Button (swatches keep explicit bg=)
+        self.tk_setPalette(
+            background=BG, foreground=FG,
+            activeBackground=ACTIVE, activeForeground=FG,
+            selectBackground=SELECT, selectForeground=BG,
+            insertBackground=FG, troughColor=FIELD,
+            highlightBackground=ACTIVE, highlightColor=SELECT,
+        )
+
+        # Store for widgets that need explicit colours (log_text etc.)
+        self._dark = {"bg": BG, "fg": FG, "field": FIELD, "active": ACTIVE, "select": SELECT}
 
     # -- layout ----------------------------------------------------------
 
@@ -70,8 +130,16 @@ class OpenRazerGUI(tk.Tk):
         self.device_combo.bind("<<ComboboxSelected>>", lambda e: self._on_device_change())
         ttk.Button(dev_row, text="Refresh", command=self._refresh_devices).pack(side="left")
 
+        # Two-column body: left = device/DPI/polling/buttons, right = lighting
+        cols = ttk.Frame(root)
+        cols.pack(fill="both", expand=True)
+        left = ttk.Frame(cols)
+        left.pack(side="left", fill="both", expand=True, padx=(0, PADDING))
+        right = ttk.Frame(cols)
+        right.pack(side="left", fill="both", expand=True)
+
         # Info block
-        info = ttk.LabelFrame(root, text="Device info", padding=PADDING)
+        info = ttk.LabelFrame(left, text="Device info", padding=PADDING)
         info.pack(fill="x", pady=(0, PADDING))
         self.info_vars = {
             k: tk.StringVar(value="–") for k in
@@ -82,7 +150,7 @@ class OpenRazerGUI(tk.Tk):
             ttk.Label(info, textvariable=var).grid(row=i, column=1, sticky="w")
 
         # Current DPI
-        dpi = ttk.LabelFrame(root, text="Current DPI", padding=PADDING)
+        dpi = ttk.LabelFrame(left, text="Current DPI", padding=PADDING)
         dpi.pack(fill="x", pady=(0, PADDING))
         ttk.Label(dpi, text="X:").grid(row=0, column=0, sticky="w")
         self.dpi_x_var = tk.StringVar()
@@ -93,7 +161,7 @@ class OpenRazerGUI(tk.Tk):
         ttk.Button(dpi, text="Apply DPI", command=self._apply_dpi).grid(row=0, column=4)
 
         # Stages
-        stages_frame = ttk.LabelFrame(root, text="Stored DPI stages", padding=PADDING)
+        stages_frame = ttk.LabelFrame(left, text="Stored DPI stages", padding=PADDING)
         stages_frame.pack(fill="both", expand=True, pady=(0, PADDING))
         cols = ("active", "stage", "x", "y")
         self.stages_tree = ttk.Treeview(
@@ -105,7 +173,7 @@ class OpenRazerGUI(tk.Tk):
         self.stages_tree.pack(fill="both", expand=True)
 
         # Polling
-        poll = ttk.LabelFrame(root, text="Polling rate", padding=PADDING)
+        poll = ttk.LabelFrame(left, text="Polling rate", padding=PADDING)
         poll.pack(fill="x", pady=(0, PADDING))
         self.poll_var = tk.IntVar(value=1000)
         for hz in (125, 500, 1000):
@@ -115,7 +183,7 @@ class OpenRazerGUI(tk.Tk):
         ttk.Button(poll, text="Apply polling", command=self._apply_polling).pack(side="left")
 
         # Lighting
-        lighting = ttk.LabelFrame(root, text="Lighting", padding=PADDING)
+        lighting = ttk.LabelFrame(right, text="Lighting", padding=PADDING)
         lighting.pack(fill="x", pady=(0, PADDING))
 
         ttk.Label(lighting, text="Wheel:").grid(row=0, column=0, sticky="w")
@@ -162,7 +230,7 @@ class OpenRazerGUI(tk.Tk):
         )
 
         # Per-LED colour grid
-        per_led = ttk.LabelFrame(root, text="Per-LED colours (overrides effect above)", padding=PADDING)
+        per_led = ttk.LabelFrame(right, text="Per-LED colours (overrides effect above)", padding=PADDING)
         per_led.pack(fill="x", pady=(0, PADDING))
 
         # Wheel + logo row
@@ -207,7 +275,7 @@ class OpenRazerGUI(tk.Tk):
         ttk.Button(actions, text="Apply per-LED", command=self._apply_per_led).pack(side="left", padx=(16, 0))
 
         # Buttons launch
-        btn_row = ttk.Frame(root)
+        btn_row = ttk.Frame(left)
         btn_row.pack(fill="x", pady=(0, PADDING))
         ttk.Button(btn_row, text="Test + remap buttons…", command=self._open_button_tester).pack(side="left")
         ttk.Label(btn_row, text="   (opens a window to see button events and write remaps)").pack(side="left")
@@ -639,7 +707,11 @@ class ButtonTestWindow(tk.Toplevel):
     verification, then write the real change once the round-trip is confirmed.
     """
 
-    BTN_IDS_TO_SCAN = list(range(1, 12))
+    # Some Razer mice expose wheel-tilt and other extras at button IDs above 11
+    # (Basilisk V3 wheel tilts are commonly in the 12-15 range). Scan wider so
+    # any mapped button is visible in the bindings table AND discoverable by
+    # the log enrichment. Unmapped IDs return status 0x03 and show as "failed".
+    BTN_IDS_TO_SCAN = list(range(1, 21))
 
     def __init__(self, parent: OpenRazerGUI, device: DiscoveredDevice):
         super().__init__(parent)
@@ -648,6 +720,8 @@ class ButtonTestWindow(tk.Toplevel):
         self.title(f"Buttons — {device.spec.name}")
         self.geometry("640x680")
         self.transient(parent)
+
+        self.labels: dict[int, str] = button_labels.load_for(device)
 
         self._build()
         self.after(50, self._reload_bindings)
@@ -665,7 +739,12 @@ class ButtonTestWindow(tk.Toplevel):
         )
         log_frame.pack(fill="both", expand=True, pady=(0, PADDING))
 
-        self.log_text = tk.Text(log_frame, height=10, wrap="none", font=("Consolas", 9))
+        _d = getattr(self.master, "_dark", {"field": "white", "fg": "black"})
+        self.log_text = tk.Text(
+            log_frame, height=10, wrap="none", font=("Consolas", 9),
+            bg=_d["field"], fg=_d["fg"], insertbackground=_d["fg"],
+            selectbackground=_d.get("select", "#3c3c3c"),
+        )
         self.log_text.pack(fill="both", expand=True)
         self.log_text.insert("end", "(click here, then press keys / mouse buttons to see what Windows reports)\n")
         self.log_text.bind("<KeyPress>", self._on_key)
@@ -692,7 +771,25 @@ class ButtonTestWindow(tk.Toplevel):
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
 
-        ttk.Button(bindings_frame, text="Reload bindings", command=self._reload_bindings).pack(anchor="w", pady=(6, 0))
+        bindings_btns = ttk.Frame(bindings_frame)
+        bindings_btns.pack(anchor="w", pady=(6, 0))
+        ttk.Button(bindings_btns, text="Reload bindings", command=self._reload_bindings).pack(side="left")
+        ttk.Button(
+            bindings_btns, text="Rebind selected to key…",
+            command=self._open_rebind_modal,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            bindings_btns, text="HID key reference…",
+            command=self._open_hid_reference,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            bindings_btns, text="Remap by click…",
+            command=self._open_remap_dialog,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            bindings_btns, text="Identify & label…",
+            command=self._open_identify_dialog,
+        ).pack(side="left", padx=(6, 0))
 
         # Remap form
         remap = ttk.LabelFrame(root, text="Remap", padding=PADDING)
@@ -740,8 +837,37 @@ class ButtonTestWindow(tk.Toplevel):
         self.log_text.insert("end", f"{ts}  {kind:6s}  {detail}\n")
         self.log_text.see("end")
 
+    # Tk event.num (Windows) → Razer button number. Standard mapping; mouse
+    # vendor can diverge, but this covers the usual left/middle/right/x1/x2.
+    _TK_TO_RAZER = {1: 1, 2: 3, 3: 2, 4: 4, 5: 5}
+
+    def _mouse_btn_for_hid(self, hid: int) -> int | None:
+        """Scan current bindings for a mouse button currently emitting this HID
+        key. Returns the Razer button id or None. Used to resolve keyboard
+        events back to 'oh that was mouse button N' in the live log."""
+        if not hasattr(self, "tree"):
+            return None
+        marker = f"HID 0x{hid:02x}"
+        for item in self.tree.get_children():
+            vals = self.tree.item(item, "values")
+            # vals = (id, type, summary, raw) — summary contains "HID 0xNN (NAME)"
+            if len(vals) >= 3 and marker in str(vals[2]):
+                try:
+                    return int(vals[0])
+                except ValueError:
+                    pass
+        return None
+
     def _on_key(self, event) -> str:
-        self._log("KEY", f"keysym={event.keysym!r:12s}  keycode={event.keycode}  char={event.char!r}")
+        hid = vk_to_hid(event.keycode & 0xFF)
+        hid_part = f"HID 0x{hid:02x} ({hid_name(hid)})" if hid is not None else "no HID mapping"
+        mouse_btn = self._mouse_btn_for_hid(hid) if hid is not None else None
+        if mouse_btn is not None:
+            label = self.labels.get(mouse_btn, "")
+            source = f"  → mouse btn {mouse_btn}" + (f" ({label})" if label else "")
+        else:
+            source = ""
+        self._log("KEY", f"keysym={event.keysym!r:12s}  {hid_part}{source}")
         if self.capture_var.get():
             self.payload_var.set(f"{event.keycode & 0xFF:02x}")
             self.action_var.set("keyboard")
@@ -750,7 +876,13 @@ class ButtonTestWindow(tk.Toplevel):
         return "break"
 
     def _on_mouse(self, event) -> None:
-        self._log("MOUSE", f"button={event.num}  x={event.x} y={event.y}")
+        razer = self._TK_TO_RAZER.get(event.num)
+        if razer is not None:
+            label = self.labels.get(razer, "")
+            source = f"  → mouse btn {razer}" + (f" ({label})" if label else "")
+        else:
+            source = ""
+        self._log("MOUSE", f"tk_button={event.num}{source}  x={event.x} y={event.y}")
 
     def _on_wheel(self, event) -> None:
         self._log("WHEEL", f"delta={event.delta}")
@@ -760,35 +892,59 @@ class ButtonTestWindow(tk.Toplevel):
 
     # ---- bindings table ----
 
+    # Razer firmware holds up to 5 onboard profiles (0-4). Synapse-era mappings
+    # often survived in a non-zero profile after uninstall while profile 0 was
+    # wiped. We scan every profile and surface the first one that returns a
+    # real mapping for each button id.
+    PROFILES_TO_SCAN = (0, 1, 2, 3, 4)
+
     def _reload_bindings(self) -> None:
-        self._status("Reading bindings…")
+        self._status("Reading bindings across profiles 0-4…")
         for r in self.tree.get_children():
             self.tree.delete(r)
 
         def work():
-            rows: list[ButtonAction | tuple[int, str]] = []
+            rows: list[tuple[int, int | None, "ButtonAction | str"]] = []
             with RazerTransport(self.device) as t:
                 m = RazerMouse(t)
                 for bid in self.BTN_IDS_TO_SCAN:
-                    try:
-                        rows.append(m.get_button_action(button_id=bid, profile=0))
-                    except Exception as e:
-                        rows.append((bid, f"failed: {e}"))
+                    found = None
+                    first_err = None
+                    for prof in self.PROFILES_TO_SCAN:
+                        try:
+                            action = m.get_button_action(button_id=bid, profile=prof)
+                        except Exception as e:
+                            if first_err is None:
+                                first_err = str(e)
+                            continue
+                        # "failed: device returned status 0x03" shows up as a successful
+                        # call but an empty/unmapped summary. mouse.py raises for those,
+                        # so if we're here the mapping is real for this profile.
+                        found = (prof, action)
+                        break
+                    if found:
+                        prof, action = found
+                        rows.append((bid, prof, action))
+                    else:
+                        rows.append((bid, None, first_err or "unmapped on profiles 0-4"))
             self.after(0, lambda: self._render_bindings(rows))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _render_bindings(self, rows) -> None:
-        for r in rows:
-            if isinstance(r, ButtonAction):
+        for bid, prof, payload in rows:
+            label = self.labels.get(bid, "")
+            label_suffix = f"  —  {label}" if label else ""
+            if isinstance(payload, ButtonAction):
                 type_name = {
                     BTN_ACTION_DEFAULT: "default", BTN_ACTION_KEYBOARD: "keyboard",
                     BTN_ACTION_DISABLE: "disabled",
-                }.get(r.action_type, f"0x{r.action_type:02x}")
-                self.tree.insert("", "end", values=(r.button_id, type_name, r.summary, r.payload.hex()))
+                }.get(payload.action_type, f"0x{payload.action_type:02x}")
+                summary = payload.summary if prof == 0 else f"{payload.summary}   [profile {prof}]"
+                self.tree.insert("", "end",
+                                 values=(payload.button_id, type_name, summary + label_suffix, payload.payload.hex()))
             else:
-                bid, msg = r
-                self.tree.insert("", "end", values=(bid, "-", msg, ""))
+                self.tree.insert("", "end", values=(bid, "-", str(payload) + label_suffix, ""))
         self._status("Bindings read.")
 
     def _on_row_select(self, event) -> None:
@@ -869,6 +1025,422 @@ class ButtonTestWindow(tk.Toplevel):
             self.after(0, self._reload_bindings)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _open_identify_dialog(self) -> None:
+        """Walk physical buttons on the mouse, press each one, label what it
+        is. Mouse events resolve directly via Tk event.num → Razer id. Key
+        events resolve via the HID → button lookup against the bindings table.
+        Labels persist per-device via button_labels.json."""
+        _d = getattr(self.parent_gui, "_dark",
+                     {"bg": "white", "fg": "black", "field": "white", "select": "#00ffff", "active": "#3c3c3c"})
+
+        modal = tk.Toplevel(self)
+        modal.title("Identify & label buttons")
+        modal.geometry("640x560")
+        modal.transient(self)
+        modal.grab_set()
+        modal.configure(bg=_d["bg"])
+
+        wrap = ttk.Frame(modal, padding=PADDING)
+        wrap.pack(fill="both", expand=True)
+
+        # Capture area
+        cap_frame = tk.Frame(wrap, bg=_d["field"], height=70)
+        cap_frame.pack(fill="x", pady=(0, 6))
+        cap_frame.pack_propagate(False)
+        cap_prompt = tk.Label(
+            cap_frame, text="PRESS A PHYSICAL BUTTON ON THE MOUSE",
+            bg=_d["field"], fg=_d["fg"], font=("Segoe UI", 11, "bold"),
+        )
+        cap_prompt.pack(expand=True)
+        cap_status = ttk.Label(wrap, text="— waiting —", foreground=_d.get("select", "#00ffff"))
+        cap_status.pack(anchor="w", pady=(0, 10))
+
+        # Table: ID | Current binding | Label (editable via click)
+        table_frame = ttk.LabelFrame(wrap, text="Button labels (click Label column to edit)", padding=PADDING)
+        table_frame.pack(fill="both", expand=True)
+        cols = ("id", "binding", "label")
+        tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=14)
+        tree.heading("id", text="ID")
+        tree.heading("binding", text="CURRENT BINDING")
+        tree.heading("label", text="LABEL")
+        tree.column("id", width=50, anchor="center")
+        tree.column("binding", width=260, anchor="w")
+        tree.column("label", width=260, anchor="w")
+        tree.pack(fill="both", expand=True)
+
+        # Mirror the main bindings table's rows (id + binding summary) + labels
+        working_labels = dict(self.labels)
+
+        def refresh_table():
+            for row in tree.get_children():
+                tree.delete(row)
+            for item in self.tree.get_children():
+                vals = self.tree.item(item, "values")
+                try:
+                    bid = int(vals[0])
+                except (ValueError, IndexError):
+                    continue
+                binding = str(vals[2]) if len(vals) >= 3 else ""
+                label = working_labels.get(bid, "")
+                tree.insert("", "end", iid=str(bid), values=(bid, binding, label))
+
+        refresh_table()
+
+        def edit_label(event):
+            region = tree.identify_region(event.x, event.y)
+            if region != "cell":
+                return
+            col = tree.identify_column(event.x)
+            if col != "#3":  # the "label" column
+                return
+            item = tree.identify_row(event.y)
+            if not item:
+                return
+            bid = int(item)
+            x, y, w, h = tree.bbox(item, col)
+            entry = ttk.Entry(tree)
+            entry.insert(0, working_labels.get(bid, ""))
+            entry.place(x=x, y=y, width=w, height=h)
+            entry.focus_set()
+            entry.select_range(0, "end")
+            def commit(_evt=None):
+                working_labels[bid] = entry.get().strip()
+                entry.destroy()
+                refresh_table()
+                tree.selection_set(str(bid))
+            entry.bind("<Return>", commit)
+            entry.bind("<Escape>", lambda e: entry.destroy())
+            entry.bind("<FocusOut>", commit)
+        tree.bind("<Double-Button-1>", edit_label)
+
+        def set_capture_result(bid: int | None, detail: str):
+            if bid is None:
+                cap_status.config(text=f"Captured: {detail} — couldn't resolve to a Razer button id")
+                return
+            tree.selection_set(str(bid))
+            tree.see(str(bid))
+            cap_status.config(text=f"Captured: {detail} → button ID {bid}. Double-click the Label cell to name it.")
+
+        def on_mouse(event):
+            razer = self._TK_TO_RAZER.get(event.num)
+            set_capture_result(razer, f"mouse tk_button={event.num}")
+        def on_key(event):
+            if event.keysym == "Escape":
+                modal.destroy()
+                return "break"
+            hid = vk_to_hid(event.keycode & 0xFF)
+            if hid is None:
+                set_capture_result(None, f"key '{event.keysym}' (VK 0x{event.keycode & 0xFF:02x})")
+                return "break"
+            bid = self._mouse_btn_for_hid(hid)
+            set_capture_result(bid, f"key '{event.keysym}' = HID 0x{hid:02x} ({hid_name(hid)})")
+            return "break"
+
+        cap_frame.bind("<Button>", on_mouse)
+        cap_prompt.bind("<Button>", on_mouse)
+        modal.bind("<KeyPress>", on_key)
+
+        # Action buttons
+        btns = ttk.Frame(wrap)
+        btns.pack(fill="x", pady=(10, 0))
+        def do_save():
+            self.labels = {k: v for k, v in working_labels.items() if v.strip()}
+            try:
+                button_labels.save_for(self.device, self.labels)
+            except Exception as e:
+                messagebox.showerror("Save failed", str(e), parent=modal)
+                return
+            modal.destroy()
+            self._reload_bindings()  # re-render so labels appear in main table
+            self._status(f"Saved {len(self.labels)} button label(s).")
+        ttk.Button(btns, text="Save labels", command=do_save).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=modal.destroy).pack(side="right", padx=(0, 6))
+
+        modal.focus_set()
+
+    def _open_remap_dialog(self) -> None:
+        """Two-step remap: (1) click the mouse button, (2) press the keyboard key,
+        (3) Save. Mouse-click detection covers buttons currently bound to default
+        mouse actions (1-5 directly, 6-11 if remapped to default mouse). A manual
+        dropdown is the fallback for buttons that are currently keyboard-bound or
+        unmapped (they don't emit mouse events when clicked)."""
+        _d = getattr(self.parent_gui, "_dark", {"bg": "white", "fg": "black", "field": "white", "select": "#00ffff", "active": "#3c3c3c"})
+
+        # Tk event.num (Windows) → Razer button number. Standard mapping for
+        # mice that follow the convention: left=1, right=2, middle=3 (Razer
+        # numbering), with X1/X2 as back/forward.
+        TK_TO_RAZER = {1: 1, 2: 3, 3: 2, 4: 4, 5: 5}
+
+        modal = tk.Toplevel(self)
+        modal.title("Remap button")
+        modal.geometry("540x480")
+        modal.transient(self)
+        modal.grab_set()
+        modal.configure(bg=_d["bg"])
+
+        wrap = ttk.Frame(modal, padding=PADDING)
+        wrap.pack(fill="both", expand=True)
+
+        state = {"bid": None, "hid": None, "hid_label": None}
+
+        # ---- Step 1 ----
+        s1 = ttk.LabelFrame(wrap, text="Step 1 — which button?", padding=PADDING)
+        s1.pack(fill="x", pady=(0, 10))
+        s1_target = tk.Frame(s1, bg=_d["field"], height=70)
+        s1_target.pack(fill="x")
+        s1_target.pack_propagate(False)
+        s1_prompt = tk.Label(
+            s1_target, text="CLICK HERE WITH THE MOUSE BUTTON",
+            bg=_d["field"], fg=_d["fg"], font=("Segoe UI", 11, "bold"),
+        )
+        s1_prompt.pack(expand=True)
+
+        s1_manual = ttk.Frame(s1)
+        s1_manual.pack(fill="x", pady=(6, 0))
+        ttk.Label(s1_manual, text="or pick manually:").pack(side="left")
+        manual_var = tk.IntVar(value=0)
+        manual_combo = ttk.Combobox(
+            s1_manual, textvariable=manual_var, width=5, state="readonly",
+            values=[0] + self.BTN_IDS_TO_SCAN,
+        )
+        manual_combo.pack(side="left", padx=(6, 0))
+        s1_status = ttk.Label(s1, text="— no button selected yet —", foreground=_d.get("select", "#00ffff"))
+        s1_status.pack(anchor="w", pady=(6, 0))
+
+        # ---- Step 2 ----
+        s2 = ttk.LabelFrame(wrap, text="Step 2 — what should it do?", padding=PADDING)
+        s2.pack(fill="x", pady=(0, 10))
+        s2_target = tk.Frame(s2, bg=_d["field"], height=70)
+        s2_target.pack(fill="x")
+        s2_target.pack_propagate(False)
+        s2_prompt = tk.Label(
+            s2_target, text="PRESS THE KEYBOARD KEY",
+            bg=_d["field"], fg=_d["fg"], font=("Segoe UI", 11, "bold"),
+        )
+        s2_prompt.pack(expand=True)
+        s2_status = ttk.Label(s2, text="— no key pressed yet —", foreground=_d.get("select", "#00ffff"))
+        s2_status.pack(anchor="w", pady=(6, 0))
+
+        # ---- Buttons ----
+        btn_row = ttk.Frame(wrap)
+        btn_row.pack(fill="x", pady=(14, 0))
+        save_btn = ttk.Button(btn_row, text="Save to mouse", state="disabled")
+        save_btn.pack(side="right")
+        ttk.Button(btn_row, text="Cancel", command=modal.destroy).pack(side="right", padx=(0, 6))
+
+        def refresh_save():
+            if state["bid"] is not None and state["hid"] is not None:
+                save_btn.state(["!disabled"])
+            else:
+                save_btn.state(["disabled"])
+
+        def current_binding_summary(bid: int) -> str:
+            for item in self.tree.get_children():
+                vals = self.tree.item(item, "values")
+                try:
+                    if int(vals[0]) == bid:
+                        return f"currently: {vals[2]}"
+                except (ValueError, IndexError):
+                    pass
+            return "currently: (unknown)"
+
+        def set_button(bid: int):
+            state["bid"] = bid
+            manual_var.set(bid)
+            s1_status.config(text=f"✓ Button {bid}  —  {current_binding_summary(bid)}")
+            refresh_save()
+
+        # Step 1 — mouse click inside the target frame
+        def on_s1_click(event):
+            bid = TK_TO_RAZER.get(event.num)
+            if bid is None:
+                s1_status.config(text=f"✗ Tk button {event.num} has no Razer mapping — use manual picker")
+                return
+            set_button(bid)
+        s1_target.bind("<Button>", on_s1_click)
+        s1_prompt.bind("<Button>", on_s1_click)
+
+        # Manual dropdown fallback
+        def on_manual(_):
+            try:
+                bid = int(manual_var.get())
+            except (tk.TclError, ValueError):
+                return
+            if bid > 0:
+                set_button(bid)
+        manual_combo.bind("<<ComboboxSelected>>", on_manual)
+
+        # Step 2 — key press anywhere in modal (but intercepted by step 2 target first)
+        def on_s2_key(event):
+            if event.keysym == "Escape":
+                modal.destroy()
+                return "break"
+            hid = vk_to_hid(event.keycode & 0xFF)
+            if hid is None:
+                s2_status.config(text=f"✗ '{event.keysym}' (VK 0x{event.keycode & 0xFF:02x}) has no HID mapping — try another")
+                state["hid"] = None
+                refresh_save()
+                return "break"
+            state["hid"] = hid
+            state["hid_label"] = hid_name(hid)
+            s2_status.config(text=f"✓ Will send: {state['hid_label']}   (HID 0x{hid:02x})")
+            refresh_save()
+            return "break"
+        # Bind key capture on the modal so focus doesn't matter
+        modal.bind("<KeyPress>", on_s2_key)
+
+        # Save
+        def do_save():
+            bid = state["bid"]
+            hid = state["hid"]
+            if bid is None or hid is None:
+                return
+            label = state["hid_label"]
+            modal.destroy()
+            self._status(f"Writing btn {bid} = {label} (HID 0x{hid:02x})…")
+
+            def work():
+                try:
+                    with RazerTransport(self.device) as t:
+                        m = RazerMouse(t)
+                        m.set_button_action(
+                            button_id=bid, action_type=BTN_ACTION_KEYBOARD,
+                            payload=bytes([0x00, hid, 0x00, 0x00]), sub_type=0x02, profile=0,
+                        )
+                        after = m.get_button_action(button_id=bid, profile=0)
+                except Exception as e:
+                    self.after(0, lambda: self._status(f"Remap failed: {e}"))
+                    return
+                self.after(0, lambda: self._status(f"Remapped btn {bid} → {label}. Read-back: {after.summary}"))
+                self.after(0, self._reload_bindings)
+            threading.Thread(target=work, daemon=True).start()
+
+        save_btn.config(command=do_save)
+        modal.focus_set()
+
+    def _open_hid_reference(self) -> None:
+        """Scrollable reference of HID Usage IDs → key names. Read-only."""
+        modal = tk.Toplevel(self)
+        modal.title("HID key reference")
+        modal.geometry("480x560")
+        modal.transient(self)
+
+        wrap = ttk.Frame(modal, padding=PADDING)
+        wrap.pack(fill="both", expand=True)
+
+        ttk.Label(
+            wrap,
+            text="USB HID Keyboard Usage IDs — the mouse firmware stores keyboard\n"
+                 "bindings using these codes, not Windows virtual-key codes.",
+        ).pack(anchor="w", pady=(0, 8))
+
+        cols = ("hid", "key")
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=22)
+        tree.heading("hid", text="HID")
+        tree.heading("key", text="KEY")
+        tree.column("hid", width=90, anchor="w")
+        tree.column("key", width=340, anchor="w")
+        tree.pack(fill="both", expand=True)
+
+        for code in sorted(HID_NAMES):
+            tree.insert("", "end", values=(f"0x{code:02x}  ({code})", HID_NAMES[code]))
+
+        ttk.Button(wrap, text="Close", command=modal.destroy).pack(anchor="e", pady=(8, 0))
+
+    def _open_rebind_modal(self) -> None:
+        """One-step rebind: select a row, click, press the key you want. Writes
+        a keyboard-action binding using the same code path as the manual form."""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a button first",
+                                "Click a row in the bindings table, then click this again.",
+                                parent=self)
+            return
+        try:
+            bid = int(self.tree.item(sel[0], "values")[0])
+        except (ValueError, IndexError):
+            messagebox.showerror("Bad selection", "Couldn't read the button ID from that row.", parent=self)
+            return
+
+        _d = getattr(self.parent_gui, "_dark", {"bg": "white", "fg": "black", "field": "white", "select": "#3c3c3c"})
+
+        modal = tk.Toplevel(self)
+        modal.title(f"Rebind button {bid}")
+        modal.geometry("420x210")
+        modal.transient(self)
+        modal.grab_set()
+        modal.configure(bg=_d["bg"])
+
+        wrap = ttk.Frame(modal, padding=PADDING)
+        wrap.pack(fill="both", expand=True)
+
+        ttk.Label(
+            wrap, text=f"Rebind mouse button {bid}",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            wrap, text="Press the key you want this button to send.\nEsc to cancel.",
+        ).pack(anchor="w", pady=(4, 10))
+
+        captured_label = ttk.Label(wrap, text="— no key pressed yet —", foreground=_d.get("select", "#00ffff"))
+        captured_label.pack(anchor="w")
+
+        state = {"code": None, "label": None}
+
+        def on_key(event):
+            if event.keysym == "Escape":
+                modal.destroy()
+                return "break"
+            # Tk's event.keycode on Windows is the Virtual-Key code — mouse
+            # firmware stores HID Usage IDs. These are different. Translate.
+            hid = vk_to_hid(event.keycode & 0xFF)
+            if hid is None:
+                captured_label.config(
+                    text=f"'{event.keysym}' (VK 0x{event.keycode & 0xFF:02x}) — no HID mapping; try another key",
+                )
+                write_btn.state(["disabled"])
+                return "break"
+            state["code"] = hid
+            state["label"] = hid_name(hid)
+            captured_label.config(text=f"You pressed: {state['label']}   (HID 0x{hid:02x})")
+            write_btn.state(["!disabled"])
+            return "break"
+
+        def do_write():
+            if state["code"] is None:
+                return
+            code = state["code"]
+            label = state["label"]
+            modal.destroy()
+            self._status(f"Writing btn {bid} = {label} (0x{code:02x})…")
+
+            def work():
+                try:
+                    with RazerTransport(self.device) as t:
+                        m = RazerMouse(t)
+                        m.set_button_action(
+                            button_id=bid, action_type=BTN_ACTION_KEYBOARD,
+                            payload=bytes([0x00, code, 0x00, 0x00]), sub_type=0x02, profile=0,
+                        )
+                        after = m.get_button_action(button_id=bid, profile=0)
+                except Exception as e:
+                    self.after(0, lambda: self._status(f"Rebind failed: {e}"))
+                    return
+                self.after(0, lambda: self._status(f"Rebound btn {bid} → {label}. Read-back: {after.summary}"))
+                self.after(0, self._reload_bindings)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        btn_row = ttk.Frame(wrap)
+        btn_row.pack(fill="x", pady=(14, 0))
+        write_btn = ttk.Button(btn_row, text="Write to mouse", command=do_write)
+        write_btn.pack(side="right")
+        write_btn.state(["disabled"])
+        ttk.Button(btn_row, text="Cancel", command=modal.destroy).pack(side="right", padx=(0, 6))
+
+        modal.bind("<KeyPress>", on_key)
+        modal.focus_set()
 
     def _write_from_form(self) -> None:
         bid = self.btn_var.get()
